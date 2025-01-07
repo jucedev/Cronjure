@@ -109,7 +109,8 @@ public class Scheduler : IScheduler
     {
         if (job.Schedule.CronExpression != null)
         {
-            // TODO: implement CRON parsing
+            var expression = CronExpression.Parse(job.Schedule.CronExpression);
+            job.NextRunTime = expression.GetNextOccurrence(DateTime.UtcNow);
         }
         else if (job.Schedule.Interval.HasValue)
         {
