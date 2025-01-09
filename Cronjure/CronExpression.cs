@@ -8,7 +8,7 @@ public class CronExpression
     private readonly HashSet<int> _months;
     private readonly HashSet<int> _daysOfWeek;
 
-    public CronExpression(
+    private CronExpression(
         HashSet<int> minutes, 
         HashSet<int> hours, 
         HashSet<int> daysOfMonth, 
@@ -90,7 +90,7 @@ public class CronExpression
             for (var i = min; i <= max; i++)
             {
                 result.Add(i);
-            };
+            }
             
             return result;
         }
@@ -143,7 +143,7 @@ public class CronExpression
             ? (min, max) 
             : ParseRangeValues(stepParts[0], min, max);
 
-        if (!int.TryParse(stepParts[1], out var step))
+        if (!int.TryParse(stepParts[1], out _))
         {
             throw new FormatException($"Invalid step value in Cron expression: {stepParts[1]}");
         }
