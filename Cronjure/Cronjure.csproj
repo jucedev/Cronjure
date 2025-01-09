@@ -5,6 +5,7 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <UserSecretsId>dotnet-Cronjure-e41cf5f4-b58c-4f1b-821f-ac205fa468a4</UserSecretsId>
+        <OutputType>Library</OutputType>
     </PropertyGroup>
 
     <ItemGroup>
