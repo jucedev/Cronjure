@@ -6,16 +6,17 @@ public class JobScheduleBuilder
     private string _cronExpression = null!;
     private TimeSpan _interval;
     private int _repeatCount = -1; // -1 by default to repeat forever.
+    private readonly JobMetadata _metadata = new();
 
-    internal JobSchedule Build()
+    internal (JobSchedule schedule, JobMetadata metadata) Build()
     {
-        return new JobSchedule
+        return (new JobSchedule
         {
             StartTime = _startTime,
             CronExpression = _cronExpression,
             Interval = _interval,
             RepeatCount = _repeatCount,
-        };
+        }, _metadata);
     }
     
     public JobScheduleBuilder StartAt(DateTime startTime)
@@ -39,6 +40,21 @@ public class JobScheduleBuilder
     public JobScheduleBuilder WithRepeatCount(int repeatCount)
     {
         _repeatCount = repeatCount;
+        return this;
+    }
+
+    public JobScheduleBuilder InGroup(string group)
+    {
+        _metadata.Group = group ?? throw new ArgumentNullException(nameof(group));
+        return this;
+    }
+    
+    public JobScheduleBuilder WithTags(params string[] tags)
+    {
+        foreach (var tag in tags)
+        {
+            _metadata.Tags.Add(tag);
+        }
         return this;
     }
 }

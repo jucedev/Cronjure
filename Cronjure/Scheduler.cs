@@ -4,13 +4,15 @@ namespace Cronjure;
 
 public class Scheduler : IScheduler
 {
-    private class ScheduledJob
+    public class ScheduledJob
     {
-        public required Type JobType { get; set; }
-        public required JobSchedule Schedule { get; set; }
-        public IDictionary<string, object>? JobData { get; set; }
+        public required Type JobType { get; init; }
+        public required JobSchedule Schedule { get; init; }
+        public IDictionary<string, object>? JobData { get; init; }
+        public DateTime? LastRunTime { get; set; }
         public DateTime? NextRunTime { get; set; }
         public int RemainingRuns { get; set; }
+        public JobMetadata Metadata { get; init; } = new();
     }
     
     private readonly ILogger<Scheduler> _logger;
@@ -18,6 +20,10 @@ public class Scheduler : IScheduler
     private readonly ConcurrentDictionary<Guid, ScheduledJob> _jobs;
     private readonly CancellationTokenSource _shutdownToken;
     private Task? _schedulerTask;
+    
+    // Group and Tag indexes for quick lookups
+    private readonly ConcurrentDictionary<string, HashSet<Guid>> _groupIndex = new();
+    private readonly ConcurrentDictionary<string, HashSet<Guid>> _tagIndex = new();
 
     public Scheduler(ILogger<Scheduler> logger, IServiceProvider serviceProvider)
     {
@@ -27,12 +33,13 @@ public class Scheduler : IScheduler
         _shutdownToken = new CancellationTokenSource();
     }
     
-    public Task ScheduleJob<T>(Action<JobScheduleBuilder> scheduleBuilder, Dictionary<string, object>? jobData = null) where T : IJob
+    public Task ScheduleJob<T>(Action<JobScheduleBuilder> scheduleBuilder, Dictionary<string, object>? jobData = null) 
+        where T : IJob
     {
         var builder = new JobScheduleBuilder();
         scheduleBuilder(builder);
         
-        var schedule = builder.Build();
+        var (schedule, metadata) = builder.Build();
         
         var jobKey = Guid.NewGuid();
         var scheduledJob = new ScheduledJob
@@ -42,10 +49,14 @@ public class Scheduler : IScheduler
             JobData = jobData ?? new Dictionary<string, object>(),
             NextRunTime = schedule.StartTime,
             RemainingRuns = schedule.RepeatCount,
+            Metadata = metadata,
         };
         
         _jobs.TryAdd(jobKey, scheduledJob);
-        _logger.LogInformation("Cronjure: Scheduled job of type {jobType}", typeof(T).Name);
+        
+        UpdateJobIndexes(jobKey, scheduledJob);
+        
+        _logger.LogInformation($"Cronjure: Scheduled job of type {typeof(T).Name} in group {metadata.Group} with tags {string.Join(", ", metadata.Tags)}");
 
         return Task.CompletedTask;
     }
@@ -58,7 +69,7 @@ public class Scheduler : IScheduler
 
     public async Task StopAsync()
     {
-        _shutdownToken.Cancel();
+        await _shutdownToken.CancelAsync();
         if (_schedulerTask != null)
         {
             await _schedulerTask;
@@ -74,7 +85,7 @@ public class Scheduler : IScheduler
             foreach (var job in jobsToRun)
             {
                 // Execute job in the background
-                _ = ExecuteJobAsync(job.Key, job.Value);
+                _ = ExecuteJobAsync(job.Value);
             }
         }
 
@@ -82,7 +93,7 @@ public class Scheduler : IScheduler
         await Task.Delay(TimeSpan.FromSeconds(1), _shutdownToken.Token);
     }
 
-    private async Task ExecuteJobAsync(Guid jobKey, ScheduledJob scheduledJob)
+    private async Task ExecuteJobAsync(ScheduledJob scheduledJob)
     {
         try
         {
@@ -96,6 +107,8 @@ public class Scheduler : IScheduler
             };
 
             await job.Execute(context);
+            
+            scheduledJob.LastRunTime = DateTime.UtcNow;
 
             UpdateNextRunTime(scheduledJob);
         }
@@ -105,16 +118,18 @@ public class Scheduler : IScheduler
         }
     }
 
-    private void UpdateNextRunTime(ScheduledJob job)
+    private static void UpdateNextRunTime(ScheduledJob job)
     {
+        var lastRunTime = job.LastRunTime ?? DateTime.UtcNow;
+        
         if (job.Schedule.CronExpression != null)
         {
             var expression = CronExpression.Parse(job.Schedule.CronExpression);
-            job.NextRunTime = expression.GetNextOccurrence(DateTime.UtcNow);
+            job.NextRunTime = expression.GetNextOccurrence(lastRunTime);
         }
         else if (job.Schedule.Interval.HasValue)
         {
-            job.NextRunTime = DateTime.UtcNow.Add(job.Schedule.Interval.Value);
+            job.NextRunTime = lastRunTime.Add(job.Schedule.Interval.Value);
             if (job.RemainingRuns <= 0) return;
 
             job.RemainingRuns--;
@@ -125,5 +140,82 @@ public class Scheduler : IScheduler
                 job.NextRunTime = null;
             }
         }
+    }
+    
+    private void UpdateJobIndexes(Guid key, ScheduledJob job)
+    {
+        _groupIndex.AddOrUpdate(
+            job.Metadata.Group,
+            [key],
+            (_, existing) =>
+            {
+                existing.Add(key);
+                return existing;
+            });
+
+        foreach (var tag in job.Metadata.Tags)
+        {
+            _tagIndex.AddOrUpdate(
+                tag,
+                [key],
+                (_, existing) =>
+                {
+                    existing.Add(key);
+                    return existing;
+                });
+        }
+    }
+
+    public Task PauseGroup(string group)
+    {
+        if (!_groupIndex.TryGetValue(group, out var groupJobs))
+        {
+            return Task.CompletedTask;
+        }
+        
+        foreach (var key in groupJobs)
+        {
+            if (_jobs.TryGetValue(key, out var job))
+            {
+                job.NextRunTime = null;
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task ResumeGroup(string group)
+    {
+        if (!_groupIndex.TryGetValue(group, out var groupJobs))
+        {
+            return Task.CompletedTask;
+        }
+        
+        foreach (var key in groupJobs)
+        {
+            if (_jobs.TryGetValue(key, out var job))
+            {
+                UpdateNextRunTime(job);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<IEnumerable<ScheduledJob>> GetJobsByGroup(string group)
+    {
+        return Task.FromResult(_jobs.Values.Where(j => j.Metadata.Group == group));
+    }
+
+    public Task<IEnumerable<ScheduledJob>> GetJobsByTag(string tag)
+    {
+        if (!_tagIndex.TryGetValue(tag, out var taggedJobs))
+        {
+            return Task.FromResult(Enumerable.Empty<ScheduledJob>());
+        }
+
+        return Task.FromResult(taggedJobs
+            .Select(id => _jobs.GetValueOrDefault(id))
+            .Where(job => job != null))!;
     }
 }
