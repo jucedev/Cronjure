@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using Cronjure.Triggers;
 
 namespace Cronjure;
 
@@ -13,6 +14,7 @@ public class Scheduler : IScheduler
         public DateTime? NextRunTime { get; set; }
         public int RemainingRuns { get; set; }
         public JobMetadata Metadata { get; init; } = new();
+        public List<ITrigger> Triggers { get; init; } = [];
     }
     
     private readonly ILogger<Scheduler> _logger;
@@ -33,7 +35,7 @@ public class Scheduler : IScheduler
         _shutdownToken = new CancellationTokenSource();
     }
     
-    public Task ScheduleJob<T>(Action<JobScheduleBuilder> scheduleBuilder, Dictionary<string, object>? jobData = null) 
+    public async Task ScheduleJob<T>(Action<JobScheduleBuilder> scheduleBuilder, Dictionary<string, object>? jobData = null) 
         where T : IJob
     {
         var builder = new JobScheduleBuilder();
@@ -56,9 +58,12 @@ public class Scheduler : IScheduler
         
         UpdateJobIndexes(jobKey, scheduledJob);
         
+        if (schedule.HasTriggers)
+        {
+            await SetupTriggers(jobKey, scheduledJob);
+        }
+        
         _logger.LogInformation($"Cronjure: Scheduled job of type {typeof(T).Name} in group {metadata.Group} with tags {string.Join(", ", metadata.Tags)}");
-
-        return Task.CompletedTask;
     }
 
     public async Task StartAsync()
@@ -69,6 +74,22 @@ public class Scheduler : IScheduler
 
     public async Task StopAsync()
     {
+        // Stop triggers first
+        foreach (var job in _jobs.Values)
+        {
+            foreach (var trigger in job.Triggers)
+            {
+                try
+                {
+                    await trigger.Stop();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Cronjure: Failed to stop trigger for job {job.JobType.Name}");
+                }
+            }
+        }
+        
         await _shutdownToken.CancelAsync();
         if (_schedulerTask != null)
         {
@@ -80,7 +101,11 @@ public class Scheduler : IScheduler
     {
         while (!_shutdownToken.IsCancellationRequested)
         {
-            var jobsToRun = _jobs.Where(j => j.Value.NextRunTime <= DateTime.UtcNow).ToList();
+            var jobsToRun = _jobs.Where(j => 
+                // Only run time-based jobs in the scheduler loop.
+                !j.Value.Schedule.HasTriggers &&
+                j.Value.NextRunTime <= DateTime.UtcNow
+            ).ToList();
 
             foreach (var job in jobsToRun)
             {
@@ -110,7 +135,10 @@ public class Scheduler : IScheduler
             
             scheduledJob.LastRunTime = DateTime.UtcNow;
 
-            UpdateNextRunTime(scheduledJob);
+            if (!scheduledJob.Schedule.HasTriggers)
+            {
+                UpdateNextRunTime(scheduledJob);
+            }
         }
         catch (Exception ex)
         {
@@ -163,6 +191,29 @@ public class Scheduler : IScheduler
                     existing.Add(key);
                     return existing;
                 });
+        }
+    }
+
+    private async Task SetupTriggers(Guid jobKey, ScheduledJob job)
+    {
+        foreach (var trigger in job.Schedule.Triggers)
+        {
+            try
+            {
+                await trigger.Start(async () =>
+                {
+                    if (_jobs.TryGetValue(jobKey, out var thisJob))
+                    {
+                        await ExecuteJobAsync(thisJob);
+                    }
+                });
+                
+                job.Triggers.Add(trigger);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Cronjure: Failed to set up trigger job for type: {job.JobType.Name}");
+            }
         }
     }
 

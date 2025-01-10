@@ -1,4 +1,6 @@
-﻿namespace Cronjure;
+﻿using Cronjure.Triggers;
+
+namespace Cronjure;
 
 public class JobScheduleBuilder
 {
@@ -6,6 +8,7 @@ public class JobScheduleBuilder
     private string _cronExpression = null!;
     private TimeSpan _interval;
     private int _repeatCount = -1; // -1 by default to repeat forever.
+    private readonly List<ITrigger> _triggers = [];
     private readonly JobMetadata _metadata = new();
 
     internal (JobSchedule schedule, JobMetadata metadata) Build()
@@ -16,6 +19,7 @@ public class JobScheduleBuilder
             CronExpression = _cronExpression,
             Interval = _interval,
             RepeatCount = _repeatCount,
+            Triggers = _triggers,
         }, _metadata);
     }
     
@@ -55,6 +59,42 @@ public class JobScheduleBuilder
         {
             _metadata.Tags.Add(tag);
         }
+        return this;
+    }
+    
+    public JobScheduleBuilder TriggerOnFile(
+        string path,
+        WatcherChangeTypes changeTypes = WatcherChangeTypes.Created,
+        string filter = "*.*",
+        TimeSpan? debounceInterval = null,
+        ILogger? logger = null)
+    {
+        var trigger = new FileSystemTrigger(
+            path, 
+            filter, 
+            changeTypes,
+            debounceInterval ?? TimeSpan.FromSeconds(1),
+            logger
+        );
+        
+        _triggers.Add(trigger);
+        return this;
+    }
+    
+    public JobScheduleBuilder TriggerOnEvent(
+        string eventPattern,
+        Func<string, object?, bool>? filter = null,
+        TimeSpan? debounceInterval = null,
+        ILogger? logger = null)
+    {
+        var trigger = new EventTrigger(
+            eventPattern,
+            filter,
+            debounceInterval ?? TimeSpan.Zero,
+            logger
+        );
+        
+        _triggers.Add(trigger);
         return this;
     }
 }
