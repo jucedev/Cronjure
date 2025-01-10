@@ -97,4 +97,36 @@ public class JobScheduleBuilder
         _triggers.Add(trigger);
         return this;
     }
+
+    public JobScheduleBuilder WithAndTrigger(Action<JobScheduleBuilder> triggerConfig)
+    {
+        var nestedBuilder = new JobScheduleBuilder();
+        triggerConfig(nestedBuilder);
+        
+        // get the triggers from the nested builder's build result
+        var (nestedSchedule, _) = nestedBuilder.Build();
+
+        if (!nestedSchedule.Triggers.Any()) return this;
+        
+        var andTrigger = new AndTrigger(nestedSchedule.Triggers.ToArray());
+        _triggers.Add(andTrigger);
+
+        return this;
+    }
+
+    public JobScheduleBuilder WithOrTrigger(Action<JobScheduleBuilder> triggerConfig)
+    {
+        var nestedBuilder = new JobScheduleBuilder();
+        triggerConfig(nestedBuilder);
+        
+        // get the triggers from the nested builder's build result
+        var (nestedSchedule, _) = nestedBuilder.Build();
+
+        if (!nestedSchedule.Triggers.Any()) return this;
+        
+        var orTrigger = new OrTrigger(nestedSchedule.Triggers.ToArray());
+        _triggers.Add(orTrigger);
+
+        return this;
+    }
 }
